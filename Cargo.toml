@@ -1,0 +1,18 @@
+[package]
+name = "embedcache"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+actix-web = "4.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10.6"
+fastembed = "3"
+readability = "0.2.0"
+anyhow = "1.0"
+async-trait = "0.1.80"
+async-sqlite = "0.2.2"
+tokio = { version = "1.38.0", features = ["full"] }
+apistos = { version="0.2", features = ["extras", "qs_query", "rapidoc", "redoc", "scalar", "swagger-ui"] }
+schemars = { package = "apistos-schemars", version = "0.8", features = ["chrono", "uuid1", "url", "rust_decimal"] }
