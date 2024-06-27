@@ -349,7 +349,7 @@ async fn main() -> std::io::Result<()> {
             .document(spec)
             .wrap(Logger::default())
             .app_data(app_state.clone())
-            .service(scope("/api/v1")
+            .service(scope("/v1")
                 .service(resource("/process").route(post().to(process_url)))
                 .service(resource("/params").route(get().to(list_supported_features)))
         )
