@@ -1,3 +1,4 @@
+use std::os::unix::process;
 use std::sync::Arc;
 use actix_web::{web, App, HttpServer, Responder, HttpResponse};
 use serde::{Deserialize, Serialize};
@@ -40,6 +41,7 @@ struct ProcessedContent {
     config: Config,
     chunks: HashMap<usize, String>,
     embeddings: HashMap<usize, Vec<f32>>,
+    error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize,JsonSchema, ApiComponent)]
@@ -159,6 +161,17 @@ async fn process_url(
     // Fetch content
     let content = fetch_content(input.url.clone()).await.map_err(actix_web::error::ErrorInternalServerError)?;
 
+    if content == "Failed to scrape content" {
+        let processed_content = ProcessedContent {
+            url: input.url.clone(),
+            config: config.clone(),
+            chunks: HashMap::new(),
+            embeddings: HashMap::new(),
+            error: "Failed to scrape content".to_string().into(),
+        };
+        return Ok(HttpResponse::Ok().json(processed_content));
+    }
+
     // Process content
     let chunker = data.chunkers.get(&config.chunking_type)
         .ok_or_else(|| actix_web::error::ErrorBadRequest(format!("Unsupported chunking type: {}", config.chunking_type)))?;
@@ -174,6 +187,7 @@ async fn process_url(
         config: config.clone(),
         chunks: chunks.into_iter().enumerate().collect(),
         embeddings: embeddings.into_iter().enumerate().collect(),
+        error: None,
     };
 
     // Cache result
@@ -363,7 +377,7 @@ async fn main() -> std::io::Result<()> {
           )
 
     })
-    .bind("127.0.0.1:8080")?
+    .bind("127.0.0.1:8081")?
     .run()
     .await
 }
