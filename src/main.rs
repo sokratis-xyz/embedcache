@@ -24,7 +24,8 @@ use apistos::web::{get, post, resource, scope};
 use apistos::{RapidocConfig, RedocConfig, ScalarConfig, SwaggerUIConfig};
 
 use async_sqlite::rusqlite::Error;
-
+use dotenv::dotenv;
+use std::env;
 
 // Structures
 
@@ -47,6 +48,12 @@ struct ProcessedContent {
 #[derive(Debug, Serialize, Deserialize,JsonSchema, ApiComponent)]
 struct InputData {
     url: String,
+    config: Option<Config>,
+}
+
+#[derive(Debug, Serialize, Deserialize,JsonSchema, ApiComponent)]
+struct InputDataText {
+    text: Vec<String>,
     config: Option<Config>,
 }
 
@@ -141,6 +148,21 @@ fn generate_hash(url: &str, config: &Config) -> String {
     hasher.update(config.chunking_size.to_string());
     hasher.update(&config.embedding_model);
     format!("{:x}", hasher.finalize())
+}
+
+// Main processing function
+#[api_operation(summary = "Process a text and return the embeddings")]
+async fn embed_text(
+    input: web::Json<InputDataText>,
+    data: web::Data<AppState>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let config = input.config.clone().unwrap_or_else(get_default_config);
+    let model = data.models.get(&config.embedding_model)
+        .ok_or_else(|| actix_web::error::ErrorBadRequest(format!("Unsupported embedding model: {}", config.embedding_model)))?;
+    let embedder = FastEmbedder { model: Arc::clone(model) };
+    let embeddings = embedder.embed(&input.text).await.map_err(actix_web::error::ErrorInternalServerError)?;
+
+    Ok(HttpResponse::Ok().json(embeddings))
 }
 
 // Main processing function
@@ -303,12 +325,48 @@ fn get_embedding_model(model_name: &str) -> Option<EmbeddingModel> {
     }
 }
 
+struct ServerConfig {
+    host: String,
+    port: u16,
+    db_path: String,
+    db_journal_mode: String,
+    enabled_models: Vec<String>,
+}
+
+impl ServerConfig {
+    fn from_env() -> Result<Self, std::env::VarError> {
+        Ok(Self {
+            host: env::var("SERVER_HOST").unwrap_or_else(|_| "127.0.0.1".to_string()),
+            port: env::var("SERVER_PORT").unwrap_or_else(|_| "8081".to_string())
+                .parse()
+                .expect("Invalid SERVER_PORT"),
+            db_path: env::var("DB_PATH").unwrap_or_else(|_| "cache.db".to_string()),
+            db_journal_mode: env::var("DB_JOURNAL_MODE").unwrap_or_else(|_| "wal".to_string()),
+            enabled_models: env::var("ENABLED_MODELS")
+                .unwrap_or_else(|_| "AllMiniLML6V2".to_string())
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect(),
+        })
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    // Load environment variables from .env file
+    dotenv().ok();
+    
+    // Load configuration
+    let config = ServerConfig::from_env().expect("Failed to load configuration");
 
     let db_pool = PoolBuilder::new()
-        .path("cache.db")
-        .journal_mode(JournalMode::Wal)
+        .path(&config.db_path)
+        .journal_mode(match config.db_journal_mode.to_lowercase().as_str() {
+            "wal" => JournalMode::Wal,
+            "truncate" => JournalMode::Truncate,
+            "persist" => JournalMode::Persist,
+            _ => JournalMode::Wal,
+        })
         .open()
         .await
         .expect("Failed to create database pool");
@@ -320,14 +378,10 @@ async fn main() -> std::io::Result<()> {
 
     // Initialize models
     let mut models = HashMap::new();
-    let model_names = vec![
-        "AllMiniLML6V2", 
-        //"BGESmallENV15", "NomicEmbedTextV15", "MultilingualE5Small"
-    ];
-
-    for name in model_names {
+    
+    for name in &config.enabled_models {
         let model = Arc::new(TextEmbedding::try_new(InitOptions {
-            model_name: get_embedding_model(&name).expect("Invalid model name"),
+            model_name: get_embedding_model(name).expect("Invalid model name"),
             show_download_progress: true,
             ..Default::default()
         }).expect("Failed to create TextEmbedding model"));
@@ -342,42 +396,42 @@ async fn main() -> std::io::Result<()> {
 
     let app_state = web::Data::new(AppState { db_pool, models, chunkers });
 
-    HttpServer::new(move || {
+    let server_addr = format!("{}:{}", config.host, config.port);
+    println!("Starting server at {}", server_addr);
 
+    HttpServer::new(move || {
         let spec = Spec {
             info: Info {
-              title: "Embedcache API".to_string(),
-              description: Some(
-                "This is the embed cache API!".to_string(),
-              ),
-              ..Default::default()
+                title: "Embedcache API".to_string(),
+                description: Some("This is the embed cache API!".to_string()),
+                ..Default::default()
             },
             servers: vec![Server {
-              url: "/".to_string(),
-              ..Default::default()
+                url: "/".to_string(),
+                ..Default::default()
             }],
             ..Default::default()
-          };
+        };
 
         App::new()
             .document(spec)
             .wrap(Logger::default())
             .app_data(app_state.clone())
             .service(scope("/v1")
+                .service(resource("/embed").route(post().to(embed_text)))
                 .service(resource("/process").route(post().to(process_url)))
                 .service(resource("/params").route(get().to(list_supported_features)))
-        )
-        .build_with(
-            "/openapi.json",
-            BuildConfig::default()
-              .with(RapidocConfig::new(&"/rapidoc"))
-              .with(RedocConfig::new(&"/redoc"))
-              .with(ScalarConfig::new(&"/scalar"))
-              .with(SwaggerUIConfig::new(&"/swagger")),
-          )
-
+            )
+            .build_with(
+                "/openapi.json",
+                BuildConfig::default()
+                    .with(RapidocConfig::new(&"/rapidoc"))
+                    .with(RedocConfig::new(&"/redoc"))
+                    .with(ScalarConfig::new(&"/scalar"))
+                    .with(SwaggerUIConfig::new(&"/swagger")),
+            )
     })
-    .bind("127.0.0.1:8081")?
+    .bind(server_addr)?
     .run()
     .await
 }
