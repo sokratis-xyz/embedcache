@@ -1,4 +1,4 @@
-# EmbedCache : high-performance text embedding service with caching
+# EmbedCache : high-performanceReally webpage embedding service with caching
 
 EmbedCache is a high-performance text embedding service with caching capabilities, built in Rust. It provides a REST API for text chunking and embedding generation using various state-of-the-art models.
 
